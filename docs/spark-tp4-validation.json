@@ -1,0 +1,189 @@
+{
+  "status": "MEASURED",
+  "startup_s": 372.9893527030945,
+  "cells": 38,
+  "measured_cells": 24,
+  "requests": 82,
+  "smoke_pass": 6,
+  "restoration": "ALL_FOUR_EMPTY_B0_DOWN",
+  "workloads": {
+    "32k-c1": {
+      "repeats": 3,
+      "concurrency": 1,
+      "input_tokens_per_request": [
+        32768
+      ],
+      "output_tokens_per_request": [
+        32
+      ],
+      "aggregate_output_tok_s": 0.2228814819321266,
+      "ttft_median_s": 139.55351065800642,
+      "ttft_worst_s": 140.0772748569725,
+      "wall_s": 143.57406332099345,
+      "per_request_engine_decode_tok_s": 7.754441356286813,
+      "per_request_engine_prefill_tok_s": 234.82258060470687,
+      "per_request_client_decode_tok_s": 7.754651662655408,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "8k-c1": {
+      "repeats": 3,
+      "concurrency": 1,
+      "input_tokens_per_request": [
+        8192
+      ],
+      "output_tokens_per_request": [
+        32
+      ],
+      "aggregate_output_tok_s": 0.9525754405307035,
+      "ttft_median_s": 29.552692147990456,
+      "ttft_worst_s": 30.378076426975895,
+      "wall_s": 33.59313985900371,
+      "per_request_engine_decode_tok_s": 8.434476767233743,
+      "per_request_engine_prefill_tok_s": 277.2359065712287,
+      "per_request_client_decode_tok_s": 8.434427276770075,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "8k-c2": {
+      "repeats": 3,
+      "concurrency": 2,
+      "input_tokens_per_request": [
+        8192,
+        8192
+      ],
+      "output_tokens_per_request": [
+        32,
+        32
+      ],
+      "aggregate_output_tok_s": 0.7561525500701753,
+      "ttft_median_s": 58.31464268799755,
+      "ttft_worst_s": 82.62951959000202,
+      "wall_s": 84.63900570600526,
+      "per_request_engine_decode_tok_s": 4.104185492817364,
+      "per_request_engine_prefill_tok_s": 199.5153877563804,
+      "per_request_client_decode_tok_s": 4.103774148580577,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "8k-c4": {
+      "repeats": 3,
+      "concurrency": 4,
+      "input_tokens_per_request": [
+        8192,
+        8192,
+        8192,
+        8192
+      ],
+      "output_tokens_per_request": [
+        32,
+        32,
+        32,
+        32
+      ],
+      "aggregate_output_tok_s": 0.7170330348655177,
+      "ttft_median_s": 106.03225768650009,
+      "ttft_worst_s": 177.57622389198514,
+      "wall_s": 178.51339307401213,
+      "per_request_engine_decode_tok_s": 1.1148111521859927,
+      "per_request_engine_prefill_tok_s": 167.7735427815861,
+      "per_request_client_decode_tok_s": 1.1148120460029731,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "mixed-c4": {
+      "repeats": 3,
+      "concurrency": 4,
+      "input_tokens_per_request": [
+        8192,
+        21,
+        21,
+        21
+      ],
+      "output_tokens_per_request": [
+        128,
+        128,
+        128,
+        128
+      ],
+      "aggregate_output_tok_s": 6.359415346178271,
+      "ttft_median_s": 2.2386660680058412,
+      "ttft_worst_s": 61.48417141899699,
+      "wall_s": 80.51054572299472,
+      "per_request_engine_decode_tok_s": 1.8196299131580953,
+      "per_request_engine_prefill_tok_s": 10.185089354088209,
+      "per_request_client_decode_tok_s": 1.8196331719521432,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "short-c1": {
+      "repeats": 3,
+      "concurrency": 1,
+      "input_tokens_per_request": [
+        21
+      ],
+      "output_tokens_per_request": [
+        256
+      ],
+      "aggregate_output_tok_s": 6.4856437273686,
+      "ttft_median_s": 0.8268207279907074,
+      "ttft_worst_s": 0.8671251469932031,
+      "wall_s": 39.47179505400709,
+      "per_request_engine_decode_tok_s": 6.607107693264377,
+      "per_request_engine_prefill_tok_s": 26.31249216890114,
+      "per_request_client_decode_tok_s": 6.607224799336739,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "short-c2": {
+      "repeats": 3,
+      "concurrency": 2,
+      "input_tokens_per_request": [
+        21,
+        21
+      ],
+      "output_tokens_per_request": [
+        128,
+        128
+      ],
+      "aggregate_output_tok_s": 11.552803449894075,
+      "ttft_median_s": 0.9240972204861464,
+      "ttft_worst_s": 0.9556064470089041,
+      "wall_s": 22.159123636985896,
+      "per_request_engine_decode_tok_s": 5.9896484082958725,
+      "per_request_engine_prefill_tok_s": 23.63576826201239,
+      "per_request_client_decode_tok_s": 5.989633515128331,
+      "vllm_metric_prefill_tok_s": null
+    },
+    "short-c4": {
+      "repeats": 3,
+      "concurrency": 4,
+      "input_tokens_per_request": [
+        21,
+        21,
+        21,
+        21
+      ],
+      "output_tokens_per_request": [
+        128,
+        128,
+        128,
+        128
+      ],
+      "aggregate_output_tok_s": 20.900602208143745,
+      "ttft_median_s": 1.0455370634881547,
+      "ttft_worst_s": 1.1029449620109517,
+      "wall_s": 24.496901806996902,
+      "per_request_engine_decode_tok_s": 5.417080661013598,
+      "per_request_engine_prefill_tok_s": 21.718942854656476,
+      "per_request_client_decode_tok_s": 5.417106603282994,
+      "vllm_metric_prefill_tok_s": null
+    }
+  },
+  "quality": "six bounded basic answers; no general quality or batch-invariance claim",
+  "model": "GLM-5.3-Flash",
+  "hardware": "4 x GB10",
+  "weights": "verified mixed GGUF, unchanged from preceding run",
+  "attention": "mirrored; FFN tensor parallel four ways",
+  "base_commit": "bed0a856606ee4a24a164066f73d2379447033f5",
+  "kv": "BF16",
+  "speculation": false,
+  "prefix_cache": false,
+  "slots": 4,
+  "total_context": 147456,
+  "measurement": "one startup; warmup plus three repeats per workload"
+}

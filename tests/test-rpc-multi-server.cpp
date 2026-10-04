@@ -4,6 +4,46 @@
 #include "ggml-rpc.h"
 #include "ggml.h"
 
+static void test_graph_after_buffer_free(const char * endpoint) {
+    ggml_backend_t backend = ggml_backend_rpc_init(endpoint, 0);
+    GGML_ASSERT(backend != nullptr);
+    ggml_init_params params = {
+        3*ggml_tensor_overhead() + ggml_graph_overhead_custom(8, false), nullptr, true,
+    };
+    ggml_context * ctx = ggml_init(params);
+    ggml_tensor * a = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
+    ggml_tensor * b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
+    ggml_tensor * c = ggml_add(ctx, a, b);
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 8, false);
+    ggml_build_forward_expand(graph, c);
+    graph->uid = ggml_graph_next_uid();
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    GGML_ASSERT(buffer != nullptr);
+    float input[16];
+    for (int i = 0; i < 16; ++i) {
+        input[i] = float(i);
+    }
+    ggml_backend_tensor_set(a, input, 0, sizeof(input));
+    ggml_backend_tensor_set(b, input, 0, sizeof(input));
+    for (int round = 0; round < 3; ++round) {
+        GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+        float output[16];
+        ggml_backend_tensor_get(c, output, 0, sizeof(output));
+        for (int i = 0; i < 16; ++i) {
+            GGML_ASSERT(output[i] == 2*input[i]);
+        }
+        if (round == 1) {
+            // Any freed buffer invalidates the server's cached graphs.
+            ggml_backend_buffer_t scratch = ggml_backend_buft_alloc_buffer(ggml_backend_get_default_buffer_type(backend), 4096);
+            GGML_ASSERT(scratch != nullptr);
+            ggml_backend_buffer_free(scratch);
+        }
+    }
+    ggml_backend_buffer_free(buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 int main(int argc, char ** argv) {
     GGML_ASSERT(argc == 3);
     ggml_backend_load_all();
@@ -65,5 +105,6 @@ int main(int argc, char ** argv) {
     ggml_free(ctx);
     ggml_backend_free(backend_b);
     ggml_backend_free(backend_a);
+    test_graph_after_buffer_free(endpoint_a);
     return 0;
 }

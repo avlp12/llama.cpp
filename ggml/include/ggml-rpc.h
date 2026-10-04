@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #define RPC_PROTO_MAJOR_VERSION    7
-#define RPC_PROTO_MINOR_VERSION    0
+#define RPC_PROTO_MINOR_VERSION    14 // private Flash TP4 protocol; same-build peers only
 #define RPC_PROTO_PATCH_VERSION    0
 
 #ifdef  __cplusplus

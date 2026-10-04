@@ -1455,6 +1455,17 @@ struct ggml_backend_cuda_context {
 
     int curr_stream_no = 0;
 
+#ifdef GGML_USE_NCCL
+    // one NCCL world comm per comm_id; separate ids let independent contexts
+    // (e.g. target + speculative draft models) run concurrent 2-rank collectives
+    struct world_comm_state {
+        ncclComm_t comm = nullptr;
+        int        n_ranks = 0;
+        int        rank = -1;
+    };
+    std::unordered_map<uint64_t, world_comm_state> world_comms;
+#endif
+
 #ifdef USE_CUDA_GRAPH
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
     // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)

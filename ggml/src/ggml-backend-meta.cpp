@@ -538,6 +538,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (scalar_only && ret.axis >= 0 && ret.axis < GGML_MAX_DIMS) {
             ret = {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
+        if (ret.axis == GGML_BACKEND_SPLIT_AXIS_UNKNOWN) {
+            GGML_LOG_ERROR("meta split inference failed: tensor=%s op=%s scalar_only=%d\n", tensor->name, ggml_op_name(tensor->op), scalar_only);
+        }
         GGML_ASSERT(ret.axis != GGML_BACKEND_SPLIT_AXIS_UNKNOWN);
         return ret;
     };
@@ -996,9 +999,12 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             } break;
             case GGML_OP_PAD_REFLECT_1D:
             case GGML_OP_ROLL:
-            case GGML_OP_ARANGE:
             case GGML_OP_TIMESTEP_EMBEDDING: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
+            } break;
+            case GGML_OP_ARANGE: {
+                // A source-less generator: every rank receives identical scalar op params.
+                split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
             } break;
             case GGML_OP_ARGSORT:
             case GGML_OP_TOP_K: {
@@ -1815,6 +1821,7 @@ struct ggml_backend_meta_context {
 
     void *                               comm_ctx       = nullptr;
     ggml_backend_comm_allreduce_tensor_t comm_allreduce = nullptr;
+    ggml_backend_comm_free_t             comm_free      = nullptr;
 
     ggml_backend_meta_context(ggml_backend_dev_t meta_dev, const char * params) {
         const size_t n_devs = ggml_backend_meta_dev_n_devs(meta_dev);
@@ -1835,24 +1842,35 @@ struct ggml_backend_meta_context {
         name += ")";
 
         if (n_devs > 1) {
-            ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
-                ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_init");
-            if (comm_init != nullptr) {
+            ggml_backend_reg_t comm_reg = nullptr;
+            for (size_t i = 0; i < n_devs; i++) {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[i]));
+                ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
+                    reg, "ggml_backend_comm_init");
+                if (comm_init == nullptr) {
+                    continue;
+                }
                 comm_ctx = comm_init(simple_backends.data(), simple_backends.size());
+                if (comm_ctx != nullptr) {
+                    comm_reg = reg;
+                    break;
+                }
             }
-        }
-        if (comm_ctx != nullptr) {
-            comm_allreduce = (ggml_backend_comm_allreduce_tensor_t)
-                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
-                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor");
-            GGML_ASSERT(comm_allreduce != nullptr);
+            if (comm_ctx != nullptr) {
+                comm_allreduce = (ggml_backend_comm_allreduce_tensor_t)
+                    ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_allreduce_tensor");
+                comm_free = (ggml_backend_comm_free_t)
+                    ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_free");
+                GGML_ASSERT(comm_allreduce != nullptr);
+                GGML_ASSERT(comm_free != nullptr);
+            } else {
+                GGML_LOG_WARN("ggml_backend_meta: no backend-specific allreduce; using butterfly fallback\n");
+            }
         }
     }
 
     ~ggml_backend_meta_context() {
         if (comm_ctx != nullptr) {
-            ggml_backend_comm_free_t comm_free = (ggml_backend_comm_free_t) ggml_backend_reg_get_proc_address(
-                ggml_backend_dev_backend_reg(ggml_backend_get_device(backend_configs[0].backend)), "ggml_backend_comm_free");
             GGML_ASSERT(comm_free != nullptr);
             comm_free(comm_ctx);
         }
@@ -2445,6 +2463,23 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
 
     for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
+        const bool needs_allreduce = n_backends > 1 && i < backend_ctx->n_subgraphs - 1 && backend_ctx->comm_ctx != nullptr;
+        if (needs_allreduce) {
+            // mark RPC ranks so the remote allreduce runs inside the graph RPC;
+            // the coordinator then launches only local ranks below
+            for (size_t j = 0; j < n_backends; j++) {
+                auto & bcj = backend_ctx->backend_configs[j];
+                ggml_cgraph * cgraph_ij = bcj.cgraphs[i].cgraph_main;
+                if (cgraph_ij->n_nodes > 0) {
+                    using set_post_t = void (*)(ggml_backend_t, int);
+                    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(bcj.backend));
+                    auto * set_post = (set_post_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_set_post_compute_allreduce");
+                    if (set_post != nullptr) {
+                        set_post(bcj.backend, cgraph_ij->n_nodes - 1);
+                    }
+                }
+            }
+        }
         for (size_t j = 0; j < n_backends; j++) {
             auto & bcj = backend_ctx->backend_configs[j];
             const ggml_status status = ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[i].cgraph_main);

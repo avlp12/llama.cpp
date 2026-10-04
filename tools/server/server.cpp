@@ -472,11 +472,16 @@ int llama_server(common_params & params, int argc, char ** argv) {
         }
 
         // setup communication child --> router if necessary
-        if (child.is_child()) {
-            ctx_server.set_state_callback([&](server_state state, json payload) {
+        ctx_server.set_state_callback([&](server_state state, json payload) {
+            if (state == SERVER_STATE_LOADING) {
+                std::lock_guard<std::mutex> lock(ctx_http.loading_mutex);
+                ctx_http.loading_progress = payload.value("value", -1.0f);
+                ctx_http.loading_stage = payload.value("current", std::string());
+            }
+            if (child.is_child()) {
                 child.notify_to_router(server_state_to_str(state), payload);
-            });
-        }
+            }
+        });
 
         if (!ctx_server.load_model(params)) {
             clean_up();

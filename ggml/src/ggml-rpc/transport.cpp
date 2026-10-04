@@ -65,9 +65,12 @@ struct rdma_conn {
     struct ibv_cq * scq = nullptr;   // send completions
     struct ibv_cq * rcq = nullptr;   // recv completions
     struct ibv_qp * qp  = nullptr;
-    struct ibv_comp_channel * ch = nullptr; // CQ events, so an idle connection can sleep instead of spinning
+    // Duplex readers must not consume the writer's completion notification.
+    struct ibv_comp_channel * sch = nullptr;
+    struct ibv_comp_channel * rch = nullptr;
 
-    std::chrono::steady_clock::time_point last_active; // last completion or posted send
+    std::chrono::steady_clock::time_point send_last_active;
+    std::chrono::steady_clock::time_point recv_last_active;
 
     void          * tx_buf = nullptr;
     struct ibv_mr * tx_mr  = nullptr;
@@ -102,7 +105,8 @@ struct rdma_conn {
         if (qp)  ibv_destroy_qp(qp);
         if (scq) ibv_destroy_cq(scq);
         if (rcq) ibv_destroy_cq(rcq);
-        if (ch)  ibv_destroy_comp_channel(ch);
+        if (sch) ibv_destroy_comp_channel(sch);
+        if (rch) ibv_destroy_comp_channel(rch);
         if (pd)  ibv_dealloc_pd(pd);
         if (ctx) ibv_close_device(ctx);
     }
@@ -150,7 +154,7 @@ struct socket_t::impl {
     bool tcp_peer_closed();
     bool rdma_activate(uint32_t remote_qpn, uint32_t remote_psn, const uint8_t * remote_gid);
     bool rdma_poll(struct ibv_cq * cq, struct ibv_wc * wc);
-    bool rdma_wait_event();
+    bool rdma_wait_event(struct ibv_comp_channel * channel);
 
     std::unique_ptr<rdma_conn> rdma;
     rdma_local_info            rdma_local = {};
@@ -301,9 +305,10 @@ bool socket_t::impl::rdma_probe() {
     if (!rdma->pd) return false;
 
     // without a completion channel rdma_poll() spins all the time, as before
-    rdma->ch  = ibv_create_comp_channel(ibctx);
-    rdma->scq = ibv_create_cq(ibctx, 16, nullptr, rdma->ch, 0);
-    rdma->rcq = ibv_create_cq(ibctx, RDMA_RX_DEPTH + 4, nullptr, rdma->ch, 0);
+    rdma->sch = ibv_create_comp_channel(ibctx);
+    rdma->rch = ibv_create_comp_channel(ibctx);
+    rdma->scq = ibv_create_cq(ibctx, 16, nullptr, rdma->sch, 0);
+    rdma->rcq = ibv_create_cq(ibctx, RDMA_RX_DEPTH + 4, nullptr, rdma->rch, 0);
     if (!rdma->scq || !rdma->rcq) return false;
 
     ibv_qp_init_attr qia = {};
@@ -405,7 +410,7 @@ bool socket_t::impl::rdma_activate(uint32_t remote_qpn, uint32_t remote_psn, con
         }
     }
 
-    rdma->last_active = std::chrono::steady_clock::now();
+    rdma->send_last_active = rdma->recv_last_active = std::chrono::steady_clock::now();
 
     GGML_LOG_INFO("RDMA activated: qpn=%u->%u mtu=%d rx_depth=%d\n",
                   rdma_local.qpn, remote_qpn, 128 << rdma_local.path_mtu, RDMA_RX_DEPTH);
@@ -413,11 +418,10 @@ bool socket_t::impl::rdma_activate(uint32_t remote_qpn, uint32_t remote_psn, con
 }
 
 // Sleep until the completion channel has an event or the TCP peer closes.
-bool socket_t::impl::rdma_wait_event() {
-    rdma_conn * c = rdma.get();
+bool socket_t::impl::rdma_wait_event(struct ibv_comp_channel * channel) {
     // POLLHUP and POLLERR are always reported, the TCP socket carries no data after the RDMA upgrade
     struct pollfd pfds[2] = {
-        { c->ch->fd, POLLIN,    0 },
+        { channel->fd, POLLIN,    0 },
         { fd,        POLLRDHUP, 0 },
     };
     if (poll(pfds, 2, -1) < 0) {
@@ -429,7 +433,7 @@ bool socket_t::impl::rdma_wait_event() {
     if (pfds[0].revents & POLLIN) {
         struct ibv_cq * ev_cq  = nullptr;
         void          * ev_ctx = nullptr;
-        if (ibv_get_cq_event(c->ch, &ev_cq, &ev_ctx) != 0) {
+        if (ibv_get_cq_event(channel, &ev_cq, &ev_ctx) != 0) {
             return false;
         }
         ibv_ack_cq_events(ev_cq, 1);
@@ -439,11 +443,13 @@ bool socket_t::impl::rdma_wait_event() {
 
 bool socket_t::impl::rdma_poll(struct ibv_cq * cq, struct ibv_wc * wc) {
     rdma_conn * c = rdma.get();
+    auto * channel = cq == c->scq ? c->sch : c->rch;
+    auto & last_active = cq == c->scq ? c->send_last_active : c->recv_last_active;
     bool armed = false;
     for (uint64_t s = 1; ; s++) {
         int n = ibv_poll_cq(cq, 1, wc);
         if (n > 0) {
-            c->last_active = std::chrono::steady_clock::now();
+            last_active = std::chrono::steady_clock::now();
             if (wc->status != IBV_WC_SUCCESS) {
                 GGML_LOG_ERROR("RDMA CQ wc error: status=%d (%s) vendor_err=0x%x\n",
                     wc->status, ibv_wc_status_str(wc->status), wc->vendor_err);
@@ -453,7 +459,7 @@ bool socket_t::impl::rdma_poll(struct ibv_cq * cq, struct ibv_wc * wc) {
         if (n < 0) return false;
         if (armed) {
             // armed and still empty: sleep until the next completion
-            if (!rdma_wait_event()) {
+            if (!rdma_wait_event(channel)) {
                 return false;
             }
             armed = false;
@@ -461,7 +467,7 @@ bool socket_t::impl::rdma_poll(struct ibv_cq * cq, struct ibv_wc * wc) {
         }
         // spin while the connection is busy, arm the CQ once it has been idle for RDMA_SPIN_TIME
         // a completion that arrives before arming raises no event, so poll once more after arming
-        if (c->ch && (s & 0x3FF) == 0 && std::chrono::steady_clock::now() - c->last_active > RDMA_SPIN_TIME) {
+        if (channel && (s & 0x3FF) == 0 && std::chrono::steady_clock::now() - last_active > RDMA_SPIN_TIME) {
             if (ibv_req_notify_cq(cq, 0) != 0) {
                 return false;
             }
@@ -502,7 +508,7 @@ bool socket_t::impl::rdma_send(const void * data, size_t size) {
         }
 
         if (ibv_post_send(c->qp, &wr, &bad) != 0) return false;
-        c->last_active = std::chrono::steady_clock::now();
+        c->send_last_active = std::chrono::steady_clock::now();
         struct ibv_wc wc;
         if (!rdma_poll(c->scq, &wc)) return false;
 
@@ -676,7 +682,27 @@ void socket_t::get_caps(uint8_t * local_caps) {
 }
 
 void socket_t::update_caps(const uint8_t * remote_caps) {
-    return pimpl->update_caps(remote_caps);
+    pimpl->update_caps(remote_caps);
+    if (std::getenv("GGML_RPC_REQUIRE_RDMA") && !pimpl->use_rdma) {
+        GGML_ABORT("RPC_RDMA_REQUIRED: refusing TCP fallback");
+    }
+    if (pimpl->use_rdma) {
+#ifndef _WIN32
+        sockaddr_in local = {}, peer = {};
+        socklen_t length = sizeof(local);
+        char local_ip[INET_ADDRSTRLEN] = {}, peer_ip[INET_ADDRSTRLEN] = {};
+        getsockname(pimpl->fd, reinterpret_cast<sockaddr *>(&local), &length);
+        length = sizeof(peer);
+        getpeername(pimpl->fd, reinterpret_cast<sockaddr *>(&peer), &length);
+        inet_ntop(AF_INET, &local.sin_addr, local_ip, sizeof(local_ip));
+        inet_ntop(AF_INET, &peer.sin_addr, peer_ip, sizeof(peer_ip));
+        GGML_LOG_INFO("RPC_RDMA_ACTIVE local=%s peer=%s\n", local_ip, peer_ip);
+#endif
+    }
+}
+
+bool socket_t::using_rdma() const {
+    return pimpl->use_rdma;
 }
 
 static bool is_valid_fd(sockfd_t sockfd) {

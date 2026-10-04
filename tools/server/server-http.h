@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -69,6 +70,9 @@ struct server_http_context {
     std::unique_ptr<Impl> pimpl;
 
     std::atomic<bool> is_ready = false;
+    std::mutex loading_mutex;
+    float loading_progress = -1.0f;
+    std::string loading_stage;
 
     // note: the handler should never throw exceptions
     using handler_t = std::function<server_http_res_ptr(const server_http_req & req)>;
