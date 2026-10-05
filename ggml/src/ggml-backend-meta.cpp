@@ -752,6 +752,12 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_calculate_split_st
     };
 
     auto handle_view = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        // An identity view preserves even a permuted layout. Singleton strides
+        // can make ggml_is_contiguous true without permitting a reshape.
+        if (ggml_are_same_shape(tensor, tensor->src[0]) &&
+                memcmp(tensor->nb, tensor->src[0]->nb, sizeof(tensor->nb)) == 0 && tensor->view_offs == 0) {
+            return src_ss[0];
+        }
         if (ggml_is_contiguous(tensor) && ggml_is_contiguous(tensor->src[0])) {
             return handle_reshape(src_ss);
         }
@@ -846,6 +852,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_calculate_split_st
     auto handle_set_rows = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
         GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_1);
         GGML_ASSERT(src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+        if (!split_states_equal(src_ss[0], src_ss[2])) {
+            GGML_LOG_ERROR("set_rows split mismatch: %s src0=%s axis=%d src2=%s axis=%d\n", tensor->name, tensor->src[0]->name, int(src_ss[0].axis), tensor->src[2]->name, int(src_ss[2].axis));
+        }
         GGML_ASSERT(split_states_equal(src_ss[0], src_ss[2]));
         return src_ss[0];
     };
@@ -1940,6 +1949,8 @@ struct ggml_backend_meta_context {
 
     void *                               comm_ctx       = nullptr;
     ggml_backend_comm_allreduce_tensor_t comm_allreduce = nullptr;
+    ggml_backend_comm_free_t comm_free = nullptr;
+    ggml_backend_reg_t comm_reg = nullptr;
     // optional per-rank enqueue (one issuer thread per device); returns false when the message needs the collective
     typedef bool (*comm_allreduce_rank_t)(void * comm_ctx, struct ggml_tensor ** tensors, int rank);
     comm_allreduce_rank_t comm_allreduce_rank = nullptr;
@@ -2038,22 +2049,38 @@ struct ggml_backend_meta_context {
         name += ")";
 
         if (n_devs > 1) {
-            ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
-                ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_init");
-            if (comm_init != nullptr) {
+            for (size_t i = 0; i < n_devs; i++) {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[i]));
+                ggml_backend_comm_init_t comm_init = (ggml_backend_comm_init_t) ggml_backend_reg_get_proc_address(
+                    reg, "ggml_backend_comm_init");
+                if (comm_init == nullptr) {
+                    continue;
+                }
                 comm_ctx = comm_init(simple_backends.data(), simple_backends.size());
+                if (comm_ctx != nullptr) {
+                    comm_reg = reg;
+                    break;
+                }
+            }
+            if (comm_ctx != nullptr) {
+                comm_allreduce = (ggml_backend_comm_allreduce_tensor_t)
+                    ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_allreduce_tensor");
+                comm_free = (ggml_backend_comm_free_t)
+                    ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_free");
+                GGML_ASSERT(comm_allreduce != nullptr);
+                GGML_ASSERT(comm_free != nullptr);
+            } else {
+                GGML_LOG_WARN("ggml_backend_meta: no backend-specific allreduce; using butterfly fallback\n");
             }
         }
         if (comm_ctx != nullptr) {
             comm_allreduce = (ggml_backend_comm_allreduce_tensor_t)
-                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
-                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor");
+                ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_allreduce_tensor");
             GGML_ASSERT(comm_allreduce != nullptr);
             comm_allreduce_rank = (comm_allreduce_rank_t)
-                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
-                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor_rank");
+                ggml_backend_reg_get_proc_address(comm_reg, "ggml_backend_comm_allreduce_tensor_rank");
 
-            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(simple_backends[0]));
+            ggml_backend_reg_t reg = comm_reg;
             step_capturable    = (ggml_backend_step_capturable_t)    ggml_backend_reg_get_proc_address(reg, "ggml_backend_step_capturable");
             step_epoch         = (ggml_backend_step_epoch_t)         ggml_backend_reg_get_proc_address(reg, "ggml_backend_step_epoch");
             step_wait_uploads  = (ggml_backend_step_wait_uploads_t)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_step_wait_uploads");
@@ -2069,8 +2096,6 @@ struct ggml_backend_meta_context {
     ~ggml_backend_meta_context() {
         step_records_free();
         if (comm_ctx != nullptr) {
-            ggml_backend_comm_free_t comm_free = (ggml_backend_comm_free_t) ggml_backend_reg_get_proc_address(
-                ggml_backend_dev_backend_reg(ggml_backend_get_device(backend_configs[0].backend)), "ggml_backend_comm_free");
             GGML_ASSERT(comm_free != nullptr);
             comm_free(comm_ctx);
         }
@@ -2956,6 +2981,18 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             return collective_status;
         }
         for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
+            if (backend_ctx->comm_ctx != nullptr && i + 1 < backend_ctx->n_subgraphs) {
+                for (size_t j = 0; j < n_backends; j++) {
+                    auto & config = backend_ctx->backend_configs[j];
+                    auto * graph = config.cgraphs[i].cgraph_main;
+                    if (graph->n_nodes > 0) {
+                        using set_post_t = void (*)(ggml_backend_t, int);
+                        auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(config.backend));
+                        auto set_post = (set_post_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_set_post_compute_allreduce");
+                        if (set_post) set_post(config.backend, graph->n_nodes - 1);
+                    }
+                }
+            }
             if (n_backends > 2) {
                 std::vector<std::thread> workers;
                 workers.reserve(n_backends - 1);

@@ -463,6 +463,9 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     static const std::regex pattern_tape_vgb ("dflash_tape_(v|g|b)_l\\d+");
     static const std::regex pattern_tape_qkv ("dflash_tape_qkv_l\\d+");
     static const std::regex pattern_ssm_conv1d      ("blk\\.\\d*\\.ssm_conv1d.weight");
+    static const std::regex pattern_glm_conv("blk\\.\\d+\\.ssm_conv1d_[qkv]\\.weight");
+    static const std::regex pattern_glm_gate("blk\\.\\d+\\.ssm_[fg]_b\\.weight");
+    static const std::regex pattern_glm_mla_kv("blk\\.\\d+\\.attn_[kv]_b\\.weight");
     static const std::regex pattern_ssm_out_weight  ("blk\\.\\d*\\.ssm_out.weight");
 
     static const std::regex pattern_ffn_up_weight     ("blk\\.\\d*\\.ffn_up(_exps)?.weight");
@@ -547,8 +550,14 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             il = 0;
             rotation = hparams.n_layer() % ud->n_devices;
         }
-        const ggml_tensor * tensor_axis_0 = suffix.empty() ? tensor : ud->model->get_tensor((prefix + suffix).c_str());
+        // GLM KDA uses attn_output for the recurrent output projection.
+        const std::string resolved_suffix = ud->model->arch == LLM_ARCH_GLM5_NEXT && suffix == "ssm_out.weight"
+                ? "attn_output.weight" : suffix;
+        const ggml_tensor * tensor_axis_0 = resolved_suffix.empty() ? tensor : ud->model->get_tensor((prefix + resolved_suffix).c_str());
         if (tensor_axis_0 == nullptr) {
+            if (suffix_fallback.empty()) {
+                LLAMA_LOG_ERROR("meta missing split reference: %s -> %s%s\n", tensor_name.c_str(), prefix.c_str(), suffix.c_str());
+            }
             GGML_ASSERT(!suffix_fallback.empty());
             tensor_axis_0 = ud->model->get_tensor((prefix + suffix_fallback).c_str());
         }
@@ -565,6 +574,25 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         if (ud->model->arch == LLM_ARCH_HRM_TEXT) {
             // aliased cache slots cannot satisfy the meta-split invariants, so replicate all tensors
             return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, tensor, 0, 0};
+        }
+        if (ud->model->arch == LLM_ARCH_GLM5_NEXT) {
+            // MLA shares one compressed latent across query heads. The indexer
+            // likewise has one key head; neither cache is head-sharded.
+            if (std::regex_match(tensor_name, pattern_kv_cache)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+            }
+            if (std::regex_match(tensor_name, pattern_attn_q_b_weight)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight");
+            }
+            if (std::regex_match(tensor_name, pattern_glm_mla_kv)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_2, "attn_output.weight");
+            }
+            if (std::regex_match(tensor_name, pattern_glm_conv)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_2, "attn_output.weight");
+            }
+            if (std::regex_match(tensor_name, pattern_glm_gate)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight");
+            }
         }
         if (is_dsv4) {
             if (std::regex_match(tensor_name, pattern_kv_cache) ||
@@ -768,6 +796,11 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             }
             return {{q_rows, 1}, {k_rows, 1}, {v_rows, 1}};
         }
+        if (ud->model->arch == LLM_ARCH_GLM5_NEXT && std::regex_match(tensor_name, pattern_r_cache)) {
+            // Q, K and V each own an independent convolution history segment.
+            const int64_t channels = hparams.n_head() * hparams.n_embd_head_kda;
+            return {{channels * (hparams.ssm_d_conv - 1), 3}};
+        }
         if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE ||
                 ud->model->arch == LLM_ARCH_QWEN4EXP) {
 
@@ -875,6 +908,35 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 (std::regex_match(tensor_name, pattern_ffn_up_exps_any) || std::regex_match(tensor_name, pattern_ffn_gate_exps_any) ||
                  std::regex_match(tensor_name, pattern_ffn_gate_up_exps_any) || std::regex_match(tensor_name, pattern_ffn_down_exps_any))) {
             return std::vector<int64_t>(segments.size(), 1); // whole experts
+        }
+        if (ud->model->arch == LLM_ARCH_GLM5_NEXT) {
+            const int64_t hd = hparams.n_embd_head_kda;
+            if (hparams.is_recr(il)) {
+                if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_kv_weight) ||
+                        std::regex_match(tensor_name, pattern_glm_conv) || std::regex_match(tensor_name, pattern_glm_gate) ||
+                        std::regex_match(tensor_name, pattern_attn_out_weight) || std::regex_match(tensor_name, pattern_ssm_dt)) {
+                    return std::vector<int64_t>(segments.size(), std::lcm(blck_size, hd));
+                }
+                if (std::regex_match(tensor_name, pattern_ssm_a) || std::regex_match(tensor_name, pattern_ssm_beta)) {
+                    return std::vector<int64_t>(segments.size(), 1);
+                }
+                if (std::regex_match(tensor_name, pattern_r_cache)) {
+                    return std::vector<int64_t>(segments.size(), hd * (hparams.ssm_d_conv - 1));
+                }
+                if (std::regex_match(tensor_name, pattern_s_cache)) {
+                    return std::vector<int64_t>(segments.size(), hd * hd);
+                }
+            } else {
+                if (std::regex_match(tensor_name, pattern_attn_q_b_weight)) {
+                    return {std::lcm(blck_size, int64_t(hparams.n_embd_head_k_mla()))};
+                }
+                if (std::regex_match(tensor_name, pattern_glm_mla_kv)) {
+                    return {1};
+                }
+                if (std::regex_match(tensor_name, pattern_attn_out_weight)) {
+                    return {std::lcm(blck_size, int64_t(hparams.n_embd_head_v_mla()))};
+                }
+            }
         }
         // for better performance it may make sense to round up blck_size to a higher power of 2 so that more efficient kernels can be used
         if (hparams.is_recr(il)) {

@@ -19,6 +19,9 @@ void llama_model_glm5_next::load_arch_hparams(llama_model_loader & ml) {
     hparams.n_embd_head_v_full = hparams.n_lora_kv;
 
     for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
+        if (hparams.n_head_kv(i) > 1) {
+            throw std::runtime_error("GLM5-Next MLA requires one compressed KV head");
+        }
         hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
     }
 

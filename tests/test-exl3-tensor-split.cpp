@@ -1,7 +1,11 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
+#ifdef GGML_TEST_EXL3_CPU
+#include "ggml-cpu.h"
+#else
 #include "ggml-cuda.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -210,7 +214,11 @@ static bool check_matrix(ggml_backend_dev_t * devices, int axis, int tokens, ggm
 }
 
 int main(int argc, char ** argv) {
+#ifdef GGML_TEST_EXL3_CPU
+    auto * reg = ggml_backend_cpu_reg();
+#else
     auto * reg = ggml_backend_cuda_reg();
+#endif
     if (ggml_backend_reg_dev_count(reg) < 1) return 77;
     // one GPU stands in for two devices: each still gets its own shard buffer
     ggml_backend_dev_t devices[] = {ggml_backend_reg_dev_get(reg, 0),

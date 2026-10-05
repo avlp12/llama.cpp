@@ -99,6 +99,12 @@ GGML_BACKEND_API bool ggml_backend_cuda_kv_transcode_workspace_reserve_v2(
 GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
 GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
+// Multi-node NCCL world (one rank per process). unique_id is ncclUniqueId bytes.
+GGML_BACKEND_API bool ggml_backend_cuda_nccl_get_unique_id(void * out, size_t out_size);
+GGML_BACKEND_API bool ggml_backend_cuda_nccl_world_init(ggml_backend_t backend, uint64_t comm_id, int n_ranks, int rank, const void * unique_id, size_t unique_id_size);
+GGML_BACKEND_API void ggml_backend_cuda_nccl_world_free(ggml_backend_t backend, uint64_t comm_id);
+GGML_BACKEND_API bool ggml_backend_cuda_nccl_world_allreduce(ggml_backend_t backend, uint64_t comm_id, struct ggml_tensor * tensor);
+
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
 #ifdef  __cplusplus

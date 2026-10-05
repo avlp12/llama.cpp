@@ -836,6 +836,15 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     }
 #endif
 
+#ifdef GGML_USE_NCCL
+    for (auto & kv : world_comms) {
+        if (kv.second.comm != nullptr) {
+            NCCL_CHECK(ncclCommDestroy(kv.second.comm));
+        }
+    }
+    world_comms.clear();
+#endif
+
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
@@ -1840,6 +1849,114 @@ static bool ggml_backend_cuda_step_capturable(ggml_backend_t backend, ggml_cgrap
     return false;
 #endif
 }
+
+#ifdef GGML_USE_NCCL
+bool ggml_backend_cuda_nccl_get_unique_id(void * out, size_t out_size) {
+    if (out == nullptr || out_size < sizeof(ncclUniqueId)) {
+        return false;
+    }
+    ncclUniqueId id;
+    ncclResult_t rc = ncclGetUniqueId(&id);
+    if (rc != ncclSuccess) {
+        GGML_LOG_ERROR("%s: ncclGetUniqueId failed: %s\n", __func__, ncclGetErrorString(rc));
+        return false;
+    }
+    memcpy(out, &id, sizeof(id));
+    if (out_size > sizeof(id)) {
+        memset((uint8_t *) out + sizeof(id), 0, out_size - sizeof(id));
+    }
+    return true;
+}
+
+bool ggml_backend_cuda_nccl_world_init(ggml_backend_t backend, uint64_t comm_id, int n_ranks, int rank, const void * unique_id, size_t unique_id_size) {
+    if (!ggml_backend_is_cuda(backend) || unique_id == nullptr || n_ranks < 2 || rank < 0 || rank >= n_ranks) {
+        return false;
+    }
+    if (unique_id_size < sizeof(ncclUniqueId)) {
+        GGML_LOG_ERROR("%s: unique_id size %zu < %zu\n", __func__, unique_id_size, sizeof(ncclUniqueId));
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    auto & wc = ctx->world_comms[comm_id];
+    if (wc.comm != nullptr) {
+        NCCL_CHECK(ncclCommDestroy(wc.comm));
+        wc.comm = nullptr;
+    }
+    ncclUniqueId id;
+    memcpy(&id, unique_id, sizeof(id));
+    ggml_cuda_set_device(ctx->device);
+    ncclResult_t rc = ncclCommInitRank(&wc.comm, n_ranks, id, rank);
+    if (rc != ncclSuccess) {
+        GGML_LOG_ERROR("%s: ncclCommInitRank failed: %s\n", __func__, ncclGetErrorString(rc));
+        ctx->world_comms.erase(comm_id);
+        return false;
+    }
+    wc.n_ranks = n_ranks;
+    wc.rank = rank;
+    GGML_LOG_INFO("%s: NCCL world rank %d/%d on CUDA%d (comm %" PRIu64 ")\n", __func__, rank, n_ranks, ctx->device, comm_id);
+    return true;
+}
+
+void ggml_backend_cuda_nccl_world_free(ggml_backend_t backend, uint64_t comm_id) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    auto it = ctx->world_comms.find(comm_id);
+    if (it != ctx->world_comms.end()) {
+        if (it->second.comm != nullptr) {
+            NCCL_CHECK(ncclCommDestroy(it->second.comm));
+        }
+        ctx->world_comms.erase(it);
+    }
+}
+
+bool ggml_backend_cuda_nccl_world_allreduce(ggml_backend_t backend, uint64_t comm_id, struct ggml_tensor * tensor) {
+    if (!ggml_backend_is_cuda(backend) || tensor == nullptr) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    auto it = ctx->world_comms.find(comm_id);
+    if (it == ctx->world_comms.end() || it->second.comm == nullptr) {
+        return false;
+    }
+    ncclComm_t world_comm = it->second.comm;
+    const int64_t ne = ggml_nelements(tensor);
+    if (ne == 0) {
+        return true;
+    }
+    if (!ggml_is_contiguously_allocated(tensor) || tensor->data == nullptr) {
+        return false;
+    }
+    ggml_cuda_set_device(ctx->device);
+    if (tensor->type == GGML_TYPE_F32) {
+        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, (size_t) ne, ncclFloat, ncclSum, world_comm, ctx->stream()));
+        return true;
+    }
+    if (tensor->type == GGML_TYPE_BF16) {
+        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, (size_t) ne, ncclBfloat16, ncclSum, world_comm, ctx->stream()));
+        return true;
+    }
+    if (tensor->type == GGML_TYPE_F16) {
+        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, (size_t) ne, ncclHalf, ncclSum, world_comm, ctx->stream()));
+        return true;
+    }
+    GGML_LOG_ERROR("%s: unsupported type %s\n", __func__, ggml_type_name(tensor->type));
+    return false;
+}
+#else
+bool ggml_backend_cuda_nccl_get_unique_id(void *, size_t) {
+    return false;
+}
+bool ggml_backend_cuda_nccl_world_init(ggml_backend_t, uint64_t, int, int, const void *, size_t) {
+    return false;
+}
+void ggml_backend_cuda_nccl_world_free(ggml_backend_t, uint64_t) {}
+bool ggml_backend_cuda_nccl_world_allreduce(ggml_backend_t, uint64_t, struct ggml_tensor *) {
+    return false;
+}
+#endif
+
 
 static uint64_t ggml_backend_cuda_step_epoch(ggml_backend_t backend) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
@@ -10225,6 +10342,18 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "dflash_crosskv_sync") == 0) {
         return (void *)dflash_crosskv_sync;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nccl_get_unique_id") == 0) {
+        return (void *)ggml_backend_cuda_nccl_get_unique_id;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nccl_world_init") == 0) {
+        return (void *)ggml_backend_cuda_nccl_world_init;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nccl_world_free") == 0) {
+        return (void *)ggml_backend_cuda_nccl_world_free;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nccl_world_allreduce") == 0) {
+        return (void *)ggml_backend_cuda_nccl_world_allreduce;
     }
     return nullptr;
 }

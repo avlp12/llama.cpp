@@ -1699,6 +1699,17 @@ struct ggml_backend_cuda_context {
     }
 #endif
 
+#ifdef GGML_USE_NCCL
+    // one NCCL world comm per comm_id; separate ids let independent contexts
+    // (e.g. target + speculative draft models) run concurrent 2-rank collectives
+    struct world_comm_state {
+        ncclComm_t comm = nullptr;
+        int        n_ranks = 0;
+        int        rank = -1;
+    };
+    std::unordered_map<uint64_t, world_comm_state> world_comms;
+#endif
+
 #ifdef USE_CUDA_GRAPH
     // One entry per split and shape. Speculative verification alternates batch
     // widths; sharing a single warmup entry across those shapes prevents any of

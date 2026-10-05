@@ -2,6 +2,7 @@
 #include "log.h"
 #include "speculative.h"
 #include "ggml-backend.h"
+#include "ggml-rpc.h"
 #include "ggml-vbr.h"
 #include "ggml.h"
 #include "gguf.h"
@@ -266,6 +267,13 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     } else if (arch == LLM_ARCH_MUSE_GLIMMER || arch == LLM_ARCH_AFMOE) {
         n_head_kv = 2; // GQA coverage
     }
+    // Exercise non-empty GLM head shards on up to four RPC ranks. A one-head
+    // fixture cannot validate the TP path used by the 64-head B0 model.
+    if (arch == LLM_ARCH_GLM5_NEXT) {
+        n_head = 4;
+        n_ff = 512; // one complete 128-value expert shard per rank
+    }
+
     const uint32_t n_embd_head = n_embd / n_head;
 
     ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llm_arch_name(arch));
@@ -300,7 +308,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         std::vector<uint32_t> n_head_per_layer;
         n_head_per_layer.reserve(n_layer);
         for (uint32_t il = 0; il < n_layer; il++) {
-            n_head_per_layer.push_back(il == 1 ? 0 : n_head);
+            n_head_per_layer.push_back(il == 1 ? 0 : arch == LLM_ARCH_GLM5_NEXT ? 1 : n_head);
         }
         // GLM5 next KDA heads come from the uniform head count, only head_count_kv is per layer.
         if (arch == LLM_ARCH_GLM5_NEXT) {
@@ -4649,6 +4657,15 @@ int main(int argc, char ** argv) {
                 usage(argv);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--rpc") == 0 && i + 1 < argc) {
+            auto reg = ggml_backend_reg_by_name("RPC");
+            GGML_ASSERT(reg);
+            using add_device_t = ggml_backend_reg_t (*)(const char *);
+            auto add = (add_device_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_add_server");
+            GGML_ASSERT(add);
+            auto remote = add(argv[++i]);
+            GGML_ASSERT(remote);
+            ggml_backend_register(remote);
         } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--seed") == 0) {
             if (i + 1 < argc) {
                 seed = std::stoull(argv[++i]);
