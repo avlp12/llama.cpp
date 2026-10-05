@@ -7,6 +7,7 @@
 #include "llama-safetensors-qwen35.h"
 #include "llama-safetensors-qwen4exp.h"
 #include "llama-safetensors-deepseek4.h"
+#include "llama-safetensors-glm5-next.h"
 #include "llama-model-source.h"
 #include "llama-repack-cache.h"
 #include "llama.h"
@@ -63,11 +64,16 @@ std::unique_ptr<llama_safetensors_importer> create_deepseek4_importer(
     return std::make_unique<llama_safetensors_deepseek4_importer>(model_dir, config, io_mode);
 }
 
+std::unique_ptr<llama_safetensors_importer> create_glm5_next_importer(const std::filesystem::path & p,const llama_safetensors_json & c,llama_safetensors_io_mode m) {
+    return std::make_unique<llama_safetensors_glm5_next_importer>(p,c,m);
+}
+
 std::unique_ptr<llama_safetensors_importer> select_importer(
         const std::filesystem::path & model_dir,
         llama_safetensors_io_mode io_mode) {
     const llama_safetensors_json config = llama_safetensors_read_model_config(model_dir);
-    static constexpr std::array<importer_registration, 4> importers = { {
+    static constexpr std::array<importer_registration, 5> importers = { {
+        { "glm5_next", llama_safetensors_glm5_next_importer::probe, create_glm5_next_importer },
         { "qwen3", llama_safetensors_qwen3_importer::probe, create_qwen3_importer },
         { "qwen3_5", llama_safetensors_qwen35_importer::probe, create_qwen35_importer },
         { "qwen4_exp", llama_safetensors_qwen4exp_importer::probe, create_qwen4exp_importer },

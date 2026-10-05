@@ -442,7 +442,7 @@ public:
     void seq_for_each(uint32_t i, F && f) const {
         assert(i < seq.size());
         const auto & set = seq[i];
-#if defined(__GNUC__)
+#if defined(__GLIBCXX__)
         for (size_t s = set._Find_first(); s < set.size(); s = set._Find_next(s)) {
             f((llama_seq_id) s);
         }
@@ -463,10 +463,18 @@ public:
         return seq[i].test(seq_id);
     }
 
-    // Token in the sequence cell at the greatest position <= p. When several cells
-    // share a temporal position (M-RoPE), the highest physical index wins, matching
-    // the previous ascending-cell scan. Returns LLAMA_TOKEN_NULL when no predecessor
-    // exists. Used by the PLE n-gram input path.
+    // the (pos, cell) pairs of sequence seq_id, ordered by position
+    const std::set<std::pair<llama_pos, uint32_t>> & seq_pos_get(llama_seq_id seq_id) const {
+        assert(seq_id >= 0);
+        assert(seq_id < LLAMA_MAX_SEQ);
+
+        return seq_pos[seq_id];
+    }
+
+    // the token of the cell of sequence seq_id at the largest position <= p
+    // when several cells share that position, the one with the highest index wins
+    // return LLAMA_TOKEN_NULL if the sequence has no cell at or before p
+    // note: used by n-gram input embeddings to recover the tokens preceding a ubatch
     llama_token seq_pos_tok_le(llama_seq_id seq_id, llama_pos p) const {
         assert(seq_id >= 0);
         assert(seq_id < LLAMA_MAX_SEQ);
