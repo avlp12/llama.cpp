@@ -635,7 +635,14 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     LLM_FFN_SILU, hparams.expert_weights_norm,
                     hparams.expert_weights_scale,
                     (llama_expert_gating_func_type) hparams.expert_gating_func,
-                    il);
+                    il, nullptr, nullptr,
+                    layer.ffn_up_exps_s,
+                    layer.ffn_gate_exps_s,
+                    layer.ffn_down_exps_s,
+                    nullptr,
+                    layer.ffn_up_exps_in_s,
+                    layer.ffn_gate_exps_in_s,
+                    layer.ffn_down_exps_in_s);
             cb(moe_out, "ffn_moe_out", il);
 
             ggml_tensor * ffn_shexp = build_ffn(cur,
