@@ -30,4 +30,4 @@ for ((rank=0; rank<ranks; rank++)); do
     "$ready" || { cat "$scratch/rank-$rank.log" >&2; exit 1; }
     args+=(--rpc "127.0.0.1:$port")
 done
-LLAMA_SPLIT_EXPERTS=slice "$build/bin/test-llama-archs" --arch glm5-next "${args[@]}"
+LLAMA_SPLIT_EXPERTS=slice "$build/bin/test-llama-archs" --arch glm5-next "${args[@]}" "${@:3}"

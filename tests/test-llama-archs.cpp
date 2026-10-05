@@ -182,6 +182,8 @@ static void usage(char ** argv) {
     LOG("Options:\n");
     LOG("  -a, --arch <arch|regex>  Run only matching LLM architectures (default: all supported)\n");
     LOG("  -s, --seed <seed>        Set the random seed for tensor initialization and token generation\n");
+    LOG("      --glm-b0-geometry   Use B0 head geometry for GLM CUDA TP qualification\n");
+    LOG("      --rpc <endpoint>    Add an RPC device (repeatable)\n");
     LOG("  -d, --stdev <stdev>      Set the standard deviation of the tensor initialization distribution (default: 0.1f)\n");
     LOG("  -o, --out <dir>          Save generated test models to <dir> instead of running backend tests\n");
     LOG("  -v <N>                   Set log verbosity level\n");
@@ -204,6 +206,9 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
     }
     return ret;
 }
+
+// Opt-in B0 head geometry for distributed CUDA qualification; the compact CPU fixture remains available.
+static bool glm_b0_geometry = false;
 
 static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     gguf_context_ptr ret(gguf_init_empty());
@@ -270,7 +275,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     // Exercise non-empty GLM head shards on up to four RPC ranks. A one-head
     // fixture cannot validate the TP path used by the 64-head B0 model.
     if (arch == LLM_ARCH_GLM5_NEXT) {
-        n_head = 4;
+        n_head = glm_b0_geometry ? 64 : 4;
         n_ff = 512; // one complete 128-value expert shard per rank
     }
 
@@ -341,8 +346,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH,       arch == LLM_ARCH_GLM5_NEXT ? uint32_t(512) : uint32_t(576));
         ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH,     uint32_t(512));
         ms.add_kv(LLM_KV_ROPE_DIMENSION_COUNT,       arch == LLM_ARCH_GLM5_NEXT ? uint32_t(0) : uint32_t(64));
-        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_MLA,   uint32_t(192));
-        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_MLA, uint32_t(128));
+        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_MLA,   uint32_t(arch == LLM_ARCH_GLM5_NEXT && glm_b0_geometry ? 256 : 192));
+        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_MLA, uint32_t(arch == LLM_ARCH_GLM5_NEXT && glm_b0_geometry ? 256 : 128));
         if (arch == LLM_ARCH_DOTS3NOTE) {
             // SWA layers reuse the same MLA geometry as the full layers in this fixture
             ms.add_kv(LLM_KV_ATTENTION_KV_LORA_RANK_SWA,     uint32_t(512));
@@ -4657,6 +4662,8 @@ int main(int argc, char ** argv) {
                 usage(argv);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--glm-b0-geometry") == 0) {
+            glm_b0_geometry = true;
         } else if (strcmp(argv[i], "--rpc") == 0 && i + 1 < argc) {
             auto reg = ggml_backend_reg_by_name("RPC");
             GGML_ASSERT(reg);
@@ -4718,6 +4725,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     LOG_INF("%s: using seed %zu, stdev %f\n", __func__, seed, stdev);
+    if (glm_b0_geometry) LOG_INF("GLM_B0_GEOMETRY heads=64 MLA_KV_heads=1 KDA_dim=128 MLA_QK_dim=256 MLA_V_dim=256\n");
 
     try {
         test_dflash_selector_family_contract();
