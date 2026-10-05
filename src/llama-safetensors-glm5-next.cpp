@@ -13,7 +13,7 @@ namespace {
 using role = llama_safetensors_quant_role;
 const std::map<std::string, std::string> aliases = {
 #include "llama-safetensors-glm5-next-map.inc"
-    {"ffn_exp_probs_b.bias", "mlp.gate.e_score_correction_bias"},
+    {"exp_probs_b.bias", "mlp.gate.e_score_correction_bias"},
 };
 void require(bool valid, const char * message) {
     if (!valid) throw std::runtime_error(std::string("GLM5-Next safetensors: ") + message);
@@ -150,7 +150,7 @@ llama_safetensors_glm5_next_importer::binding llama_safetensors_glm5_next_import
     out.parts.push_back({source,std::nullopt});
     if(suffix=="ssm_a")out.op=binding::EXP_A;
     out.force_f32=suffix.rfind("hc_",0)==0 || suffix.rfind("indexer_compressor_",0)==0 ||
-        suffix.rfind("ssm_conv1d_",0)==0 || suffix=="ssm_dt.bias" || suffix=="ffn_exp_probs_b.bias";
+        suffix.rfind("ssm_conv1d_",0)==0 || suffix=="ssm_dt.bias" || suffix=="exp_probs_b.bias";
     return out;
 }
 

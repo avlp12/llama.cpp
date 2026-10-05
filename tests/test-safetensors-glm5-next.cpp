@@ -1,4 +1,5 @@
 #include "llama-safetensors-glm5-next.h"
+#include "llama-arch.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
@@ -31,6 +32,12 @@ int main(int argc, char ** argv){
             auto c=llama_safetensors_read_json(dir/"config.json");
             llama_safetensors_glm5_next_importer loader(dir,c,llama_safetensors_io_mode::BUFFERED);
             auto * meta=loader.build_metadata();
+            const auto & tc=c.at("text_config");
+            const int first_moe=tc.at("first_k_dense_replace").get<int>();
+            const std::string bias_name=LLM_TN(LLM_ARCH_GLM5_NEXT)(LLM_TENSOR_FFN_EXP_PROBS_B,"bias",first_moe).str();
+            ggml_type type;std::array<int64_t,GGML_MAX_DIMS> shape;
+            check(loader.describe(bias_name,type,shape)&&type==GGML_TYPE_F32&&shape[0]==tc.at("n_routed_experts").get<int64_t>(),"original router bias metadata mismatch");
+            std::cout<<"GLM5_ROUTER_BIAS_VALID name="<<bias_name<<" experts="<<shape[0]<<"\n";
             std::cout<<"GLM5_METADATA_VALID keys="<<gguf_get_n_kv(meta)<<" tensors_hint="<<loader.tensor_capacity_hint()<<"\n";
             gguf_free(meta);return 0;
         } catch(const std::exception & e) { std::cerr<<e.what()<<"\n";return 1; }
@@ -56,9 +63,13 @@ int main(int argc, char ** argv){
         fixture.add(prefix+"self_attn.q_conv1d.weight","BF16",{2,1,2},{0,0x3f,0,0x40,0,0x41,0,0x42});
         fixture.add("model.language_model.norm.weight","BF16",{2},{0x80,0x3f,0,0x40});
         fixture.add("model.language_model.embed_tokens.weight","BF16",{2,2},{0x80,0x3f,0,0x40,0xab,0x4a,0x91,0xbe});
+        fixture.add(prefix+"mlp.gate.e_score_correction_bias","F32",{2},f32({0.125f,-0.25f}));
         fixture.save(root/"model.safetensors");
         for(auto mode:{llama_safetensors_io_mode::BUFFERED,llama_safetensors_io_mode::MMAP}){
             llama_safetensors_glm5_next_importer loader(root,cfg,mode);ggml_type type;std::array<int64_t,4> ne;
+            const std::string bias_name=LLM_TN(LLM_ARCH_GLM5_NEXT)(LLM_TENSOR_FFN_EXP_PROBS_B,"bias",0).str();
+            check(loader.describe(bias_name,type,ne)&&type==GGML_TYPE_F32&&ne[0]==2,"canonical expert correction bias missing");
+            check(loader.materialize(bias_name,type,8)==f32({0.125f,-0.25f}),"expert correction bias changed");
             check(loader.describe("blk.0.ffn_gate_exps.weight",type,ne),"expert description missing");
             check(type==ggml_exl3_type(4,1)&&ne==std::array<int64_t,4>{128,128,2,1},"MCG expert type/geometry changed");
             ggml_init_params ip={1024*1024,nullptr,true};auto *ctx=ggml_init(ip);auto *w=ggml_new_tensor_3d(ctx,type,128,128,2);
