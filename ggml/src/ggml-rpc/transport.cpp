@@ -102,10 +102,13 @@ struct rdma_conn {
         if (qp)  ibv_destroy_qp(qp);
         // CQ destruction waits for acknowledgements, including notifications
         // left queued when the TCP peer disconnected before the next wait.
-        if (ch) {
+        for (ibv_comp_channel * channel : {sch, rch}) {
+            if (!channel) {
+                continue;
+            }
             struct ibv_cq * event_cq = nullptr;
             void * event_ctx = nullptr;
-            while (ibv_get_cq_event(ch, &event_cq, &event_ctx) == 0) {
+            while (ibv_get_cq_event(channel, &event_cq, &event_ctx) == 0) {
                 ibv_ack_cq_events(event_cq, 1);
             }
         }
