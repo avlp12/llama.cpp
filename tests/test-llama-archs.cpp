@@ -182,6 +182,7 @@ static void usage(char ** argv) {
     LOG("Options:\n");
     LOG("  -a, --arch <arch|regex>  Run only matching LLM architectures (default: all supported)\n");
     LOG("  -s, --seed <seed>        Set the random seed for tensor initialization and token generation\n");
+    LOG("      --glm-streams N    Test N independent GLM streams (1,2,4)\n");
     LOG("      --glm-decode-probe  Also compare a one-token decode with its own NMSE gate\n");
     LOG("      --glm-b0-geometry   Use B0 head geometry for GLM CUDA TP qualification\n");
     LOG("      --rpc <endpoint>    Add an RPC device (repeatable)\n");
@@ -211,6 +212,7 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
 // Opt-in B0 head geometry for distributed CUDA qualification; the compact CPU fixture remains available.
 static bool glm_b0_geometry = false;
 static bool glm_decode_probe = false;
+static uint32_t glm_streams = 1;
 
 static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     gguf_context_ptr ret(gguf_init_empty());
@@ -640,6 +642,11 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
         llama_model_load_from_file_ptr(file, model_params));
     if (!model) {
         throw std::runtime_error("failed to create llama model");
+    }
+    if (model->arch == LLM_ARCH_GLM5_NEXT && glm_streams > 1) {
+        ctx_params.n_seq_max = glm_streams;
+        ctx_params.n_ubatch = 128;
+        ctx_params.kv_unified = false;
     }
     llama_context_ptr lctx(llama_init_from_model(model.get(), ctx_params));
     if (!lctx) {
@@ -4040,9 +4047,11 @@ static std::vector<float> get_logits(
     const uint32_t n_ctx    = llama_n_ctx(lctx);
     const uint32_t n_tokens = tokens.size();
     llama_batch batch = llama_batch_init(n_ctx, 0, 1);
-    GGML_ASSERT(n_tokens <= n_ctx);
+    const uint32_t streams = model->arch == LLM_ARCH_GLM5_NEXT ? glm_streams : 1;
+    GGML_ASSERT(n_tokens <= n_ctx && n_tokens % streams == 0);
+    const uint32_t per_stream = n_tokens / streams;
     for (uint32_t pos = 0; pos < n_tokens; pos++) {
-        common_batch_add(batch, tokens[pos], pos, {0}, true);
+        common_batch_add(batch, tokens[pos], pos % per_stream, {int(pos / per_stream)}, true);
     }
     batch.n_tokens = n_tokens;
     if (encode) {
@@ -4067,10 +4076,14 @@ static std::vector<float> get_logits(
     if (glm_decode_probe && model->arch == LLM_ARCH_GLM5_NEXT && !encode) {
         GGML_ASSERT(n_tokens < n_ctx);
         common_batch_clear(batch);
-        common_batch_add(batch, tokens[0], n_tokens, {0}, true);
+        for (uint32_t seq = 0; seq < streams; ++seq) {
+            common_batch_add(batch, tokens[seq * per_stream], per_stream, {int(seq)}, true);
+        }
         if (llama_decode(lctx, batch)) { llama_batch_free(batch); throw std::runtime_error("GLM one-token decode failed"); }
-        const float * next = llama_get_logits_ith(lctx, 0);
-        ret.insert(ret.end(), next, next + n_vocab);
+        for (uint32_t seq = 0; seq < streams; ++seq) {
+            const float * next = llama_get_logits_ith(lctx, seq);
+            ret.insert(ret.end(), next, next + n_vocab);
+        }
     }
     llama_batch_free(batch);
     return ret;
@@ -4572,9 +4585,15 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                         bool decode_ok = true;
                         if (glm_decode_probe && arch == LLM_ARCH_GLM5_NEXT && !encode) {
                             const auto count = llama_vocab_n_tokens(llama_model_get_vocab(model_and_ctx_dev.first.get()));
-                            const std::vector<float> ref_decode(logits_cpu.end()-count, logits_cpu.end());
-                            const std::vector<float> dev_decode(logits_dev.end()-count, logits_dev.end());
-                            const double decode_nmse = nmse(ref_decode, dev_decode);
+                            double decode_nmse = 0;
+                            for (uint32_t seq = 0; seq < glm_streams; ++seq) {
+                                const auto offset = count * (glm_streams - seq);
+                                const std::vector<float> ref_decode(logits_cpu.end()-offset, logits_cpu.end()-offset+count);
+                                const std::vector<float> dev_decode(logits_dev.end()-offset, logits_dev.end()-offset+count);
+                                const double value = nmse(ref_decode, dev_decode);
+                                if (!std::isfinite(value)) { decode_nmse = value; break; }
+                                decode_nmse = std::max(decode_nmse, value);
+                            }
                             LOG(" [GLM_DECODE_NMSE %.9e] ", decode_nmse);
                             decode_ok = decode_nmse <= 1e-4;
                         }
@@ -4682,6 +4701,9 @@ int main(int argc, char ** argv) {
                 usage(argv);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--glm-streams") == 0 && i+1 < argc) {
+            glm_streams = std::stoul(argv[++i]);
+            if (glm_streams != 1 && glm_streams != 2 && glm_streams != 4) return 2;
         } else if (strcmp(argv[i], "--glm-decode-probe") == 0) {
             glm_decode_probe = true;
         } else if (strcmp(argv[i], "--glm-b0-geometry") == 0) {
