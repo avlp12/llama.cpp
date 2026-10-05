@@ -182,6 +182,7 @@ static void usage(char ** argv) {
     LOG("Options:\n");
     LOG("  -a, --arch <arch|regex>  Run only matching LLM architectures (default: all supported)\n");
     LOG("  -s, --seed <seed>        Set the random seed for tensor initialization and token generation\n");
+    LOG("      --glm-decode-probe  Also compare a one-token decode with its own NMSE gate\n");
     LOG("      --glm-b0-geometry   Use B0 head geometry for GLM CUDA TP qualification\n");
     LOG("      --rpc <endpoint>    Add an RPC device (repeatable)\n");
     LOG("  -d, --stdev <stdev>      Set the standard deviation of the tensor initialization distribution (default: 0.1f)\n");
@@ -209,6 +210,7 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
 
 // Opt-in B0 head geometry for distributed CUDA qualification; the compact CPU fixture remains available.
 static bool glm_b0_geometry = false;
+static bool glm_decode_probe = false;
 
 static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     gguf_context_ptr ret(gguf_init_empty());
@@ -447,7 +449,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     // note: using a realistic top-k here makes the results unstable and hard to match between CPU and GPU
     //       a large value makes things deterministic since all data is selected by the indexer
     //ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(8));
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(131072));
+    // Small selection makes the decode probe exercise gathered latents after its 128-token prefill.
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(arch == LLM_ARCH_GLM5_NEXT && glm_decode_probe ? 16 : 131072));
 
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,   uint32_t(4));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KPOOL,        uint32_t(4));
@@ -4061,6 +4064,14 @@ static std::vector<float> get_logits(
             ret.push_back(logits_ith[j]);
         }
     }
+    if (glm_decode_probe && model->arch == LLM_ARCH_GLM5_NEXT && !encode) {
+        GGML_ASSERT(n_tokens < n_ctx);
+        common_batch_clear(batch);
+        common_batch_add(batch, tokens[0], n_tokens, {0}, true);
+        if (llama_decode(lctx, batch)) { llama_batch_free(batch); throw std::runtime_error("GLM one-token decode failed"); }
+        const float * next = llama_get_logits_ith(lctx, 0);
+        ret.insert(ret.end(), next, next + n_vocab);
+    }
     llama_batch_free(batch);
     return ret;
 }
@@ -4558,7 +4569,16 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                         const double nmse_val = nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
                         status_nmse = "\033[1;32mOK\033[0m";
-                        if (!(nmse_val <= 1e-4)) {
+                        bool decode_ok = true;
+                        if (glm_decode_probe && arch == LLM_ARCH_GLM5_NEXT && !encode) {
+                            const auto count = llama_vocab_n_tokens(llama_model_get_vocab(model_and_ctx_dev.first.get()));
+                            const std::vector<float> ref_decode(logits_cpu.end()-count, logits_cpu.end());
+                            const std::vector<float> dev_decode(logits_dev.end()-count, logits_dev.end());
+                            const double decode_nmse = nmse(ref_decode, dev_decode);
+                            LOG(" [GLM_DECODE_NMSE %.9e] ", decode_nmse);
+                            decode_ok = decode_nmse <= 1e-4;
+                        }
+                        if (!(nmse_val <= 1e-4) || !decode_ok) {
                             test_ok = false;
                             status_nmse = "\033[1;31mFAIL\033[0m";
                         }
@@ -4662,6 +4682,8 @@ int main(int argc, char ** argv) {
                 usage(argv);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--glm-decode-probe") == 0) {
+            glm_decode_probe = true;
         } else if (strcmp(argv[i], "--glm-b0-geometry") == 0) {
             glm_b0_geometry = true;
         } else if (strcmp(argv[i], "--rpc") == 0 && i + 1 < argc) {

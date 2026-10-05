@@ -1051,6 +1051,7 @@ if (NOT LLAMA_USE_SYSTEM_GGML)
     llama_build_and_test(test-backend-meta-partial-io.cpp)
     set_tests_properties(test-backend-meta-partial-io PROPERTIES SKIP_RETURN_CODE 77)
     llama_build_and_test(test-backend-meta-split-state.cpp)
+llama_build_and_test(test-meta-broadcast-matmul.cpp)
     set_tests_properties(test-backend-meta-split-state PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

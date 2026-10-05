@@ -666,6 +666,15 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_calculate_split_st
                 src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
             return src_ss[0];
         }
+        // A shared matrix can broadcast over independently sharded batches
+        // of activations (GLM gathered MLA keys/values versus query heads).
+        // Only a singleton LHS batch is safe: a replicated non-singleton LHS
+        // would otherwise pair every rank with the wrong batch window.
+        if (tensor->op == GGML_OP_MUL_MAT && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED &&
+                src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+                tensor->src[0]->ne[2] == 1) {
+            return src_ss[1];
+        }
         GGML_ABORT("unsupported mul_mat split states: node=%s src0=%s axis=%d src1=%s axis=%d",
             tensor->name, tensor->src[0]->name, (int) src_ss[0].axis, tensor->src[1]->name, (int) src_ss[1].axis);
         //return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
@@ -1054,7 +1063,19 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_calculate_split_st
             case GGML_OP_DIAG_MASK_ZERO: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
-            case GGML_OP_SOFT_MAX:
+            case GGML_OP_SOFT_MAX: {
+                float max_bias = 0.0f;
+                memcpy(&max_bias, reinterpret_cast<const float *>(tensor->op_params) + 1, sizeof(max_bias));
+                // Each head owns whole softmax rows. A shared mask broadcasts
+                // over those heads; ALiBi and per-head sinks need separate rules.
+                if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2 && tensor->src[1] != nullptr &&
+                        src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED && tensor->src[1]->ne[2] == 1 &&
+                        tensor->src[2] == nullptr && max_bias == 0.0f) {
+                    split_state = src_ss[0];
+                } else {
+                    split_state = handle_generic(src_ss, /*scalar_only =*/ false);
+                }
+            } break;
             case GGML_OP_SOFT_MAX_BACK: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ false);
             } break;
