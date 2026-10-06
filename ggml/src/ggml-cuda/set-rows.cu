@@ -1,4 +1,5 @@
 #include "set-rows.cuh"
+#include "b0-fp8.cuh"
 #include "cpy-utils.cuh"
 #include "turbo-quant-cuda.cuh"
 #include "turbo-tcq-alpha.cuh"
@@ -1593,6 +1594,11 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
+    } else if (dst->type == GGML_TYPE_B0_FP8_MLA) {
+        set_rows_cuda_quant<idx_t, block_b0_fp8_mla, QK_B0_FP8_MLA, quantize_f32_b0_fp8_mla_block>(
+            src0_d, src1_d, (block_b0_fp8_mla*)dst->data,
+            ne00, ne01, ne02, ne03, ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03, nb10, nb11, nb12, nb1, nb2, nb3, stream);
     } else if (dst->type == GGML_TYPE_Q8_0) {
         set_rows_cuda_quant<idx_t, block_q8_0, QK8_0, quantize_f32_q8_0_block>(
             src0_d, src1_d, (block_q8_0*)dst->data,

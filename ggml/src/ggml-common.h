@@ -267,6 +267,15 @@ typedef struct {
 } block_mxfp4;
 static_assert(sizeof(block_mxfp4) == sizeof(uint8_t) + QK_MXFP4/2, "wrong mxfp4 block size/padding");
 
+#define QK_B0_FP8_MLA 512
+#define QR_B0_FP8_MLA 1
+typedef struct {
+    uint8_t qs[512];
+    float scales[4];
+    uint16_t rope[64];
+} block_b0_fp8_mla;
+static_assert(sizeof(block_b0_fp8_mla) == 656, "wrong B0 MLA layout");
+
 #define QK_NVFP4 64
 #define QK_NVFP4_SUB 16  // sub-block size for per-group scales
 typedef struct {

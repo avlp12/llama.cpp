@@ -7633,6 +7633,11 @@ llama_context * llama_init_from_model(
         return nullptr;
     }
 
+    if (params.type_k == GGML_TYPE_B0_FP8_MLA && params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED) {
+        LLAMA_LOG_ERROR("%s: b0_fp8_mla uses the native F32 reader; explicitly set --flash-attn off\n", __func__);
+        return nullptr;
+    }
+
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) {
         if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
             LLAMA_LOG_INFO("%s: enabling flash_attn since it is required for quantized V cache\n", __func__);

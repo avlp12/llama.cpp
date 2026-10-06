@@ -5921,6 +5921,18 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
                 GGML_UNUSED(data);
                 GGML_UNUSED(nb);
             } break;
+        case GGML_TYPE_B0_FP8_MLA: {
+            const block_b0_fp8_mla * rows = (const block_b0_fp8_mla *) data;
+            for (size_t i = 0; i < nb; ++i) {
+                bool empty = true;
+                const uint8_t * bytes = (const uint8_t *) &rows[i];
+                for (size_t j = 0; j < sizeof(block_b0_fp8_mla); ++j) empty = empty && bytes[j] == 0;
+                if (empty) continue; // a cleared, never-written cache row
+                for (int j = 0; j < 4; ++j) if (!isfinite(rows[i].scales[j]) || rows[i].scales[j] < FLT_MIN) return false;
+                for (int j = 0; j < 512; ++j) if ((rows[i].qs[j] & 127) == 127) return false;
+                for (int j = 0; j < 64; ++j) if (rows[i].rope[j] != 0) return false;
+            }
+        } break;
         case GGML_TYPE_F8_E4M3:
             {
                 const uint8_t * f8 = (const uint8_t *) data;
@@ -6036,4 +6048,43 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
     }
 
     return true;
+}
+
+// Original B0 concat_and_cache_ds_mla semantics. The input is rounded to BF16
+// before amax, and both divisions remain FP32 round-to-nearest operations.
+void quantize_row_b0_fp8_mla_ref(const float * GGML_RESTRICT x, block_b0_fp8_mla * GGML_RESTRICT y, int64_t k) {
+    GGML_ASSERT(k % QK_B0_FP8_MLA == 0);
+    for (int64_t row = 0; row < k/QK_B0_FP8_MLA; ++row) {
+        float values[512];
+        for (int j = 0; j < 512; ++j) {
+            GGML_ASSERT(isfinite(x[row*512+j]));
+            values[j] = GGML_BF16_TO_FP32(GGML_FP32_TO_BF16(x[row*512+j]));
+            GGML_ASSERT(isfinite(values[j]));
+        }
+        for (int g = 0; g < 4; ++g) {
+            float amax = 0.0f;
+            for (int j = 0; j < 128; ++j) amax = fmaxf(amax, fabsf(values[g*128+j]));
+            const float scale = fmaxf(amax/448.0f, FLT_MIN);
+            y[row].scales[g] = scale;
+            for (int j = 0; j < 128; ++j) {
+                const float v = fminf(fmaxf(values[g*128+j]/scale, -448.0f), 448.0f);
+                y[row].qs[g*128+j] = ggml_fp32_to_e4m3(v);
+            }
+        }
+        memset(y[row].rope, 0, sizeof(y[row].rope));
+    }
+}
+void dequantize_row_b0_fp8_mla(const block_b0_fp8_mla * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    GGML_ASSERT(k % QK_B0_FP8_MLA == 0);
+    for (int64_t row = 0; row < k/QK_B0_FP8_MLA; ++row) {
+        for (int g = 0; g < 4; ++g) {
+            if (x[row].scales[g] == 0) {
+                const uint8_t * bytes = (const uint8_t *) &x[row];
+                for (size_t j = 0; j < sizeof(block_b0_fp8_mla); ++j) GGML_ASSERT(bytes[j] == 0);
+            } else {
+                GGML_ASSERT(isfinite(x[row].scales[g]) && x[row].scales[g] >= FLT_MIN);
+            }
+            for (int j = 0; j < 128; ++j) y[row*512+g*128+j] = ggml_e4m3_to_fp32(x[row].qs[g*128+j])*x[row].scales[g];
+        }
+    }
 }

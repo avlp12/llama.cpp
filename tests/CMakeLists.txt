@@ -656,6 +656,10 @@ endif()
 llama_build_and_test(test-cuda-q8-mmv-selector.cpp)
 llama_build_and_test(test-backend-expert-transfer.cpp)
 target_include_directories(test-backend-expert-transfer PRIVATE ../ggml/src)
+llama_build(test-b0-fp8-kv.cpp)
+target_link_libraries(test-b0-fp8-kv PRIVATE ggml-cpu)
+target_include_directories(test-b0-fp8-kv PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
 llama_build_and_test(test-exl3-cpu.cpp)
 # Same packed-tile and matrix oracle as CUDA, available before GPU admission.
 add_executable(test-exl3-tensor-split-cpu test-exl3-tensor-split.cpp)

@@ -996,6 +996,9 @@ llama_kv_cache::llama_kv_cache(
 
     turbo_vbr_layer_policy vbr_layer_policy =
         turbo_vbr_layer_policy_from_env(hparams.n_layer_all, type_k, type_v, kv_size);
+    if (type_k == GGML_TYPE_B0_FP8_MLA && (vbr_params_.dynamic || vbr_params_.budget_bytes || vbr_layer_policy.enabled)) {
+        throw std::invalid_argument("b0_fp8_mla is a fixed cache format; VBR transcoding is unsupported");
+    }
     if (vbr_params_.dynamic && vbr_params_.codec == LLAMA_VBR_CODEC_CLASSIC && vbr_layer_policy.enabled) {
         throw std::runtime_error("VBR_LAYER_SCHEDULE is Turbo-specific and cannot be used with classic VBR");
     }
@@ -1070,6 +1073,12 @@ llama_kv_cache::llama_kv_cache(
     }
 
     const bool is_mla = hparams.is_mla();
+    if (type_k == GGML_TYPE_B0_FP8_MLA && (!is_mla || hparams.n_lora_kv != 512 || hparams.n_rot() != 0)) {
+        throw std::invalid_argument("b0_fp8_mla requires NoPE MLA with latent512");
+    }
+    if (type_v == GGML_TYPE_B0_FP8_MLA) {
+        throw std::invalid_argument("b0_fp8_mla is a latent K-only cache codec");
+    }
     // Kept parallel to layers[] so scratch registration can select only tensors actually
     // aliased from mem_other. Local f16 tensors must remain zero-cost.
     std::vector<bool> layer_is_shared;
@@ -2040,6 +2049,7 @@ llama_kv_cache::llama_kv_cache(
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
             (ggml_is_quantized(type_k) || classic_dynamic) && !is_turbo_k &&
+            type_k != GGML_TYPE_B0_FP8_MLA && // B0 main latents are not Hadamard rotated
             hparams.n_embd_head_k() % 64 == 0;
 
         // always create Hadamard rotation tensors for DeepSeek lightning indexers
@@ -12165,6 +12175,18 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint32_t n_embd_head_k = n_embd_k_gqa / n_head_kv;
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+
+    if (k->type == GGML_TYPE_B0_FP8_MLA) {
+        // Dense reader materializes the same FP32 values as the sparse gather
+        // reader. It never presents the packed type to a weight GEMM/FA kernel.
+        GGML_ASSERT(n_embd_k_gqa == 512 && n_head_kv == 1);
+        auto * rows = ggml_view_3d(ctx, k, 512, kv_size, ns, k->nb[1], k->nb[2], k->nb[2]*sinfo.s0);
+        GGML_ASSERT(n_kv <= (1u << 24)); // exact integer positions in the F32 range graph
+        auto * range = ggml_arange(ctx, 0, float(n_kv), 1);
+        auto * shape = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, ns);
+        auto * ids = ggml_cast(ctx, ggml_repeat(ctx, range, shape), GGML_TYPE_I32);
+        return ggml_reshape_4d(ctx, ggml_get_rows(ctx, rows, ids), 512, 1, n_kv, ns);
+    }
 
     return ggml_view_4d(ctx, k,
             n_embd_head_k, n_head_kv, n_kv, ns,

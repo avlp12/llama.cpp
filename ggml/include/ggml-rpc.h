@@ -9,7 +9,7 @@ extern "C" {
 // Fork wire namespace: upstream 7 has different op/type IDs. The high bit
 // prevents either peer from treating the other's tensors as compatible.
 #define RPC_PROTO_MAJOR_VERSION    (0x80 | 7)
-#define RPC_PROTO_MINOR_VERSION    15 // ggml0.26 fork; reject older tensor/op registries
+#define RPC_PROTO_MINOR_VERSION    16 // ggml0.26 fork; reject older tensor/op registries
 // HELLO checks major/minor only. An enum/layout change must bump a checked
 // version, not merely this informational patch field.
 #define RPC_PROTO_PATCH_VERSION    0

@@ -1545,3 +1545,7 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     assert(k % QK_K == 0);
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
+
+void quantize_row_b0_fp8_mla(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_b0_fp8_mla_ref(x, (block_b0_fp8_mla *) y, k);
+}

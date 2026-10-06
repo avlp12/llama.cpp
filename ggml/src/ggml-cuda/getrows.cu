@@ -1,4 +1,5 @@
 #include "getrows.cuh"
+#include "b0-fp8.cuh"
 #include "dequantize.cuh"
 #include "convert.cuh"
 #include "turbo-quant-cuda.cuh"
@@ -352,6 +353,10 @@ static void ggml_cuda_get_rows_switch_src0_type(
             break;
         case GGML_TYPE_BF16:
             get_rows_cuda_float((const nv_bfloat16 *) src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_B0_FP8_MLA:
+            get_rows_cuda_q<QK_B0_FP8_MLA, QR_B0_FP8_MLA, dequantize_b0_fp8_mla>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
         case GGML_TYPE_F8_E4M3:

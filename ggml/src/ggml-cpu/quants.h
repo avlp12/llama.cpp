@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 // Quantization
+void quantize_row_b0_fp8_mla(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 void quantize_row_q1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 void quantize_row_q2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 void quantize_row_q2_0_g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
