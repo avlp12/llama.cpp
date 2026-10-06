@@ -16,7 +16,9 @@ extern "C" {
 
 #ifdef  __cplusplus
 static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT changed - review fork RPC wire version");
-static_assert(GGML_TYPE_COUNT == 92, "GGML_TYPE_COUNT changed - review fork RPC wire version");
+static_assert(GGML_TYPE_COUNT == 93, "GGML_TYPE_COUNT changed - review fork RPC wire version");
+static_assert(GGML_TYPE_B0_FP8_MLA == 92 && RPC_PROTO_MINOR_VERSION == 16,
+              "B0 packed cache requires the reviewed wire16 type registry");
 #endif
 
 #define GGML_RPC_MAX_SERVERS       16
