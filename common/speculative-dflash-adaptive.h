@@ -5,6 +5,15 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <stdexcept>
+
+// Proposal count alone does not select the non-causal DFlash2 forward width.
+inline int32_t common_dflash_block_size(int32_t trained, int32_t requested) {
+    if (trained < 2 || requested < 0 || requested == 1 || requested > trained) {
+        throw std::invalid_argument("DFlash2 forward block must be 2..trained block size, or 0");
+    }
+    return requested == 0 ? trained : requested;
+}
 
 // Drafting and target verification have shape-dependent costs, and their batch
 // kernels need not scale linearly. Measure intermediate depths even when full

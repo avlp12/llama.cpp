@@ -340,6 +340,7 @@ struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
     bool n_max_set = false; // true when the user explicitly overrides the draft depth
+    int32_t dflash_block_size = 0; // explicit DFlash2 forward width; 0 keeps checkpoint metadata
 
     // Qwen-27B MTP-only sidecars: 32768 enables the experimental public
     // balanced FR-Spec map; 0 keeps the full vocabulary (default).

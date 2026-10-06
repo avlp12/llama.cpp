@@ -1282,6 +1282,13 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 block_size = std::atoi(buf);
             }
         }
+        if (this->params.dflash_block_size != 0) {
+            if (!is_dflash2) {
+                throw std::invalid_argument("explicit DFlash2 block width requires a selector drafter");
+            }
+            block_size = common_dflash_block_size(block_size, this->params.dflash_block_size);
+            llama_set_dflash_block_size(ctx_dft, block_size);
+        }
         char sample_from_anchor_buf[16] = {};
         if (llama_model_meta_val_str(model_dft, "dflash.sample_from_anchor",
                     sample_from_anchor_buf, sizeof(sample_from_anchor_buf)) >= 0) {
@@ -2199,7 +2206,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, trim_pos, -1);
 
             const int32_t n_block_tokens = is_dflash2
-                ? (adaptive && n_seq == 1 ? std::min(block_size, std::max(3, n_draft + 1)) : block_size)
+                ? (adaptive && n_seq == 1 && this->params.dflash_block_size == 0
+                    ? std::min(block_size, std::max(3, n_draft + 1)) : block_size)
                 : n_draft + (is_dspark && sample_from_anchor ? 0 : 1);
             i_block_beg[seq_id] = batch.n_tokens;
             n_block    [seq_id] = n_block_tokens;
@@ -2225,7 +2233,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         // decode all sequence's noise block in a single batch
         if (is_dflash2) {
-            llama_set_dflash_block_size(ctx_dft, adaptive && n_seq == 1 ? n_block[0] : 0);
+            llama_set_dflash_block_size(ctx_dft, this->params.dflash_block_size != 0
+                    ? block_size : (adaptive && n_seq == 1 ? n_block[0] : 0));
         }
         const int64_t t_dec0 = ggml_time_us();
         int ret = llama_decode(ctx_dft, batch);

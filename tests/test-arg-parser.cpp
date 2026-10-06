@@ -25,6 +25,16 @@
 
 static void test(void) {
     common_params params;
+    {
+        common_params block;
+        std::vector<std::string> args = {"test", "--draft-max", "3", "--draft-dflash-block-size", "4"};
+        std::vector<char *> argv;
+        for (auto & arg : args) { argv.push_back(arg.data()); }
+        assert(common_params_parse((int) argv.size(), argv.data(), block, LLAMA_EXAMPLE_SERVER));
+        assert(block.speculative.draft.n_max == 3);
+        assert(block.speculative.draft.dflash_block_size == 4);
+    }
+
 
     {
         common_params base;

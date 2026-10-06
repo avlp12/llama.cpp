@@ -20,6 +20,15 @@ static int settle(common_speculative_dflash_adaptive & policy, int maximum, int 
 }
 
 int main() {
+    assert(common_dflash_block_size(8, 0) == 8);
+    assert(common_dflash_block_size(8, 4) == 4);
+    for (int32_t bad : {-1, 1, 9}) {
+        bool rejected = false;
+        try { (void) common_dflash_block_size(8, bad); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        assert(rejected);
+    }
+
     // Reuse hardware cost, never a prior request's acceptance or chosen depth.
     common_speculative_dflash_adaptive::calibration timing;
     for (int i = 0; i < 3; ++i) {

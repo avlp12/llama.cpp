@@ -5657,6 +5657,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_MAX"));
     add_opt(common_arg(
+        {"--draft-dflash-block-size"}, "N",
+        "DFlash2 forward block width, including the anchor (0 keeps checkpoint metadata)",
+        [](common_params & params, int value) {
+            if (value < 0 || value == 1) {
+                throw std::invalid_argument("DFlash2 block size must be 0 or at least 2");
+            }
+            params.speculative.draft.dflash_block_size = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI})
+     .set_env("LLAMA_ARG_DRAFT_DFLASH_BLOCK_SIZE"));
+    add_opt(common_arg(
         {"-cd", "--ctx-size-draft"}, "N",
         string_format("draft-model context size (default: %d, 0 = inherit the target's per-sequence "
                 "capacity; implicit MTP uses unified KV; drafters rarely need more than a few hundred)",
