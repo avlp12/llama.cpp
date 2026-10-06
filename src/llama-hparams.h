@@ -72,6 +72,7 @@ struct llama_hparams {
     uint32_t n_embd;
     uint32_t n_layer_all;
     uint32_t n_layer_nextn = 0;
+    uint32_t n_layer_decision = 0; // trailing blocks that form the decision head
 
     // HRM's physical H/L stacks repeat across distinct cache slots.
     uint32_t n_hrm_layers_per_stack = 0;
@@ -308,6 +309,11 @@ struct llama_hparams {
     uint32_t indexer_top_k     = 0;
     uint32_t indexer_kpool     = 0; // k-pool size
     bool     indexer_kpool_select_tail = true;
+
+    // head-size slots per cached indexer row, the last one holds the pooled key
+    uint32_t indexer_kpool_row = 3;
+    // pools are consecutive cells in sequence order, not runs of consecutive positions
+    bool     indexer_kpool_by_order = false;
     // MSA
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;
@@ -376,6 +382,7 @@ struct llama_hparams {
     uint32_t    dec_n_layer        = 0;
 
     enum llama_pooling_type      pooling_type            = LLAMA_POOLING_TYPE_NONE;
+    enum llama_pooling_type      pooling_type_cls        = LLAMA_POOLING_TYPE_UNSPECIFIED; // pooling before the classifier head (RANK)
     enum llama_rope_type         rope_type               = LLAMA_ROPE_TYPE_NONE;
     enum llama_rope_scaling_type rope_scaling_type_train = LLAMA_ROPE_SCALING_TYPE_NONE;
 

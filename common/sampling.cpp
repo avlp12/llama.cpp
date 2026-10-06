@@ -133,6 +133,7 @@ struct common_sampler {
     // on rejection, the residual p-q distribution.
     uint32_t speculative_seed;
     std::mt19937 speculative_rng;
+    const llama_vocab * vocab = nullptr;
 
     void reset() {
         prev.clear();
@@ -477,6 +478,7 @@ struct common_sampler * common_sampler_init(
         /* .cur_p   = */ {},
         /* .speculative_seed = */ speculative_seed,
         /* .speculative_rng  = */ std::mt19937(speculative_seed),
+        /* .vocab = */ vocab,
     };
 
     int32_t n_suppress = 0;
@@ -607,6 +609,7 @@ struct common_sampler * common_sampler_clone(common_sampler * gsmpl) {
         /* .cur_p   = */ gsmpl->cur_p,
         /* .speculative_seed = */ gsmpl->speculative_seed,
         /* .speculative_rng  = */ gsmpl->speculative_rng,
+        /* .vocab = */ gsmpl->vocab,
     };
 }
 
@@ -627,6 +630,9 @@ void common_sampler_copy(const common_sampler * src, common_sampler * dst) {
     dst->cur        = src->cur;
     dst->cur_p      = src->cur_p;
     dst->cur_p.data = src->cur_p.data ? dst->cur.data() : nullptr; // re-point to dst's buffer
+    dst->speculative_rng = src->speculative_rng;
+    dst->speculative_seed = src->speculative_seed;
+    dst->vocab = src->vocab;
     dst->t_total_us = src->t_total_us;
 }
 
@@ -801,6 +807,8 @@ static std::vector<llama_token> common_sampler_sample_and_accept_n_impl(
     std::vector<llama_token> result;
     result.reserve(draft.size() + 1);
 
+    const llama_vocab * vocab = gsmpl->vocab;
+
     size_t i = 0;
     for (; i < draft.size(); i++) {
         const llama_token id = sample(i);
@@ -809,7 +817,9 @@ static std::vector<llama_token> common_sampler_sample_and_accept_n_impl(
 
         result.push_back(id);
 
-        if (draft[i] != id) {
+        // do not accept draft tokens after an EOG - they are not output but would stay in the context
+        // on replay the last token is from the target and can be EOG, so a trailing EOG is still accepted
+        if (draft[i] != id || (vocab && llama_vocab_is_eog(vocab, id) && i + 1 < draft.size())) {
             break;
         }
     }

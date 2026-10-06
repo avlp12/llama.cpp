@@ -457,6 +457,7 @@ int main(int argc, char * argv[]) {
     num_failed += test_vec_dot_f32(verbose);
     num_failed += test_f8_e4m3_known_codes(verbose);
     num_failed += test_vec_dot_q(verbose);
+    num_failed += test_quantize_imatrix_degenerate(verbose);
 
     if (num_failed || verbose) {
         printf("%d tests failed\n", num_failed);

@@ -75,6 +75,8 @@ struct llama_cparams {
     bool vbr_pin_k = false;
     bool vbr_pin_v = false;
 
+    bool training;           // set by llama_opt_init()
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

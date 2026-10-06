@@ -497,7 +497,11 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
-    set_tests_properties(test-recurrent-state-rollback PROPERTIES FIXTURES_REQUIRED generate-models)
+    # abort on graph reallocations that the initial reserve should have covered
+    set_tests_properties(test-recurrent-state-rollback PROPERTIES
+        FIXTURES_REQUIRED generate-models
+        ENVIRONMENT "GGML_SCHED_DEBUG_REALLOC=1"
+    )
 
     llama_test(
         test-recurrent-state-rollback
@@ -619,6 +623,15 @@ if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
 endif()
 # The full suite runs explicitly in ci/run.sh. Keep focused fork CTest cases below.
 # TODO: decouple the operator tool from libllama [TAG_TESTS_LLAMA_LINK].
+
+if (GGML_METAL AND NOT GGML_BACKEND_DL)
+    # calls the Metal backend's graph optimizer and fusion table directly
+    llama_build_and_test(test-metal-graph-optimize.cpp)
+    target_include_directories(test-metal-graph-optimize PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src ${PROJECT_SOURCE_DIR}/ggml/src/ggml-metal)
+    target_link_libraries(test-metal-graph-optimize PRIVATE ggml-metal)
+endif()
+
+# TODO: make this test (and others) not link `libllama` as it is not needed [TAG_TESTS_LLAMA_LINK]
 llama_build(test-backend-ops.cpp)
 target_include_directories(test-backend-ops PRIVATE ../ggml/src)
 # Metadata ABI gate needs no model or device backend.

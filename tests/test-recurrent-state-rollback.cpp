@@ -1,3 +1,6 @@
+// TODO: merge with test-save-load-state.cpp
+// TODO: merge with test-state-restore-fragmented.cpp
+
 #include "arg.h"
 #include "common.h"
 #include "ggml-backend.h"
@@ -1058,6 +1061,15 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
 
     bool ok = true;
 
+    // decode tokens [p_begin, p_end) of seq s, a batch belongs to one context so it is built per call
+    const auto decode_range = [&](llama_context * ctx, uint32_t s, llama_pos p_begin, llama_pos p_end) {
+        common_batch batch(ctx);
+        for (llama_pos pos = p_begin; pos < p_end; ++pos) {
+            batch.add(tok(s, pos), pos, (llama_seq_id) s, false);
+        }
+        return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
+    };
+
     // both contexts decode the identical [0, p0) prefill; only ctx_roll decodes
     // the tail, which is then rolled back so its restore is pending at replay
     for (uint32_t s = 0; s < n_seqs && ok; ++s) {
@@ -1093,16 +1105,19 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
         return false;
     }
 
-    llama_batch batch = llama_batch_init(n_seqs*n_replay, 0, 1);
-    for (uint32_t s = 0; s < n_seqs; ++s) {
-        for (uint32_t i = 0; i < n_replay; ++i) {
-            const llama_pos pos = p0 + (llama_pos) i;
-            common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, true);
+    // all seqs replay in a single batch
+    const auto decode_replay = [&](llama_context * ctx) {
+        common_batch batch(ctx);
+        for (uint32_t s = 0; s < n_seqs; ++s) {
+            for (uint32_t i = 0; i < n_replay; ++i) {
+                const llama_pos pos = p0 + (llama_pos) i;
+                batch.add(tok(s, pos), pos, (llama_seq_id) s, true);
+            }
         }
-    }
-    ok = llama_decode(ctx_roll.get(), batch) == 0;
-    ok = ok && llama_decode(ctx_ref.get(), batch) == 0;
-    llama_batch_free(batch);
+        return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
+    };
+    ok = decode_replay(ctx_roll.get());
+    ok = ok && decode_replay(ctx_ref.get());
     if (!ok) {
         fprintf(stderr, "%s : multi-seq replay decode failed\n", __func__);
         return false;
@@ -1158,13 +1173,12 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     constexpr uint32_t n_tail = 4;
 
     {
-        llama_batch batch_tail = llama_batch_init(n_tail, 0, 1);
+        common_batch batch_tail(ctx_ref.get());
         for (uint32_t i = 0; i < n_tail; ++i) {
             const llama_pos pos = p0 + (llama_pos) (n_replay + i);
-            common_batch_add(batch_tail, tok(0, pos + 7), pos, { 0 }, false);
+            batch_tail.add(tok(0, pos + 7), pos, 0, false);
         }
-        ok = llama_decode(ctx_ref.get(), batch_tail) == 0;
-        llama_batch_free(batch_tail);
+        ok = llama_process(ctx_ref.get(), LLAMA_PROCESS_TYPE_DECODE, batch_tail.get()) == 0;
     }
 
     float diff_tail = 0.0f;
@@ -1172,11 +1186,8 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     double nmse_tail_a0 = 0.0;
     for (uint32_t i = 0; i < n_tail && ok; ++i) {
         const llama_pos pos = p0 + (llama_pos) (n_replay + i);
-        llama_batch batch_one = llama_batch_init(1, 0, 1);
-        common_batch_add(batch_one, tok(1, pos), pos, { 1 }, true);
-        ok = llama_decode(ctx_roll.get(), batch_one) == 0;
-        ok = ok && llama_decode(ctx_ref.get(), batch_one) == 0;
-        llama_batch_free(batch_one);
+        ok = decode_one(ctx_roll.get(), tok(1, pos), pos, 1);
+        ok = ok && decode_one(ctx_ref.get(), tok(1, pos), pos, 1);
         if (!ok) {
             break;
         }

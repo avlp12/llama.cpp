@@ -97,6 +97,7 @@ public:
 
     // The model's indexer pool size.
     uint32_t get_kpool() const { return hparams_idx.indexer_kpool; }
+    bool get_kpool_by_order() const { return hparams_idx.indexer_kpool_by_order; }
 
     // Which cells of a sequence make up which pool of kpool consecutive positions.
     // It is kept here because it outlives the batch: pools are fixed by the positions relative to the
@@ -237,6 +238,10 @@ private:
     // streams per ubatch, read from the slot infos before ctx_idx takes them
     // declared first, so it is initialised while sinfos_idx is still intact
     const std::vector<uint32_t> ns_ubatch;
+
+    // the indexer cells of each ubatch, kept for pools in cache order (qwen4exp): token s*n + i of ubatch u
+    // sits in cell idxs[s][i] of stream strm[s] of sinfos_kpool[u], and several cells can share a position
+    const slot_info_vec_t sinfos_kpool;
 
     // null unless the model has an indexer
     const llama_memory_context_ptr ctx_idx;

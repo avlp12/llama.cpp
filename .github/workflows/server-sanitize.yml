@@ -31,6 +31,10 @@ on:
       '.github/workflows/server-sanitize.yml'
     ]
 
+cache-mode: none
+permissions:
+  contents: read
+
 env:
   LLAMA_ARG_LOG_COLORS: 1
   LLAMA_ARG_LOG_PREFIX: 1

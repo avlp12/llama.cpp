@@ -5146,7 +5146,7 @@ private:
         };
         if (params_base.resume) {
             open(resume_store,
-                 params_base.resume_path.empty() ? fs_get_cache_directory() : params_base.resume_path, "resume", true);
+                 params_base.resume_path.empty() ? fs_get_cache_directory().string() : params_base.resume_path, "resume", true);
         }
         if (!params_base.slot_save_path.empty()) {
             // its entries live for one request; the file of a slot is synced on its own
@@ -9652,7 +9652,7 @@ private:
         if (has_mmproj && params_base.fit_params && params_base.n_ctx == 0 && !params_base.mmproj_gpu_swap) {
             auto mparams_measure = make_mmproj_params(params_base.mmproj_use_gpu);
             int64_t t_start = ggml_time_us();
-            auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_measure);
+            auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_measure).backend_mem_usage;
             int64_t t_elapsed = ggml_time_us() - t_start;
             if (!mmproj_mem.empty()) {
                 size_t total = 0;
@@ -9692,7 +9692,7 @@ private:
             params_base.speculative.has_type(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) {
             const auto target_devices = server_target_fit_devices(params_base);
             auto mparams_gpu = make_mmproj_params(true);
-            const auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_gpu);
+            const auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_gpu).backend_mem_usage;
             bool reserved = false;
             for (const auto & [device, bytes] : mmproj_mem) {
                 for (size_t i = 0; i < target_devices.size() &&
@@ -9818,7 +9818,7 @@ private:
 
             std::vector<size_t> mmproj_by_device(margins_base.size(), 0);
             auto mparams_gpu = make_mmproj_params(true);
-            auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_gpu);
+            auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams_gpu).backend_mem_usage;
             for (auto & [dev, size] : mmproj_mem) {
                 bool mapped = false;
                 for (size_t i = 0; i < tgt_devices.size() && i < mmproj_by_device.size(); ++i) {
@@ -25412,6 +25412,7 @@ server_context_meta server_context::get_meta() const {
         /* model_aliases          */ impl->model_aliases,
         /* model_tags             */ impl->model_tags,
         /* model_path             */ impl->params_base.model.path,
+        /* model_output_modalities */ server_model_output_modalities(common_get_decision_type(impl->model_tgt)),
         /* has_mtmd               */ impl->mctx != nullptr,
         /* has_inp_image          */ impl->chat_params.allow_image,
         /* has_inp_audio          */ impl->chat_params.allow_audio,

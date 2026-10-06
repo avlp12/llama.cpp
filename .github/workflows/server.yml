@@ -43,6 +43,10 @@ on:
       'tools/server/**.*'
     ]
 
+cache-mode: none
+permissions:
+  contents: read
+
 env:
   LLAMA_ARG_LOG_COLORS: 1
   LLAMA_ARG_LOG_PREFIX: 1
@@ -140,6 +144,11 @@ jobs:
 
   windows:
     runs-on: windows-2025
+
+    cache-mode: write
+    permissions:
+      actions: write
+      contents: read
 
     steps:
       - name: Clone
